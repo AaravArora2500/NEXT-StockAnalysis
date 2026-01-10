@@ -6,9 +6,6 @@ if (!ALPHA_API_KEY) {
   throw new Error("Missing ALPHA_API_KEY in environment variables");
 }
 
-/**
- * Search for the correct symbol using Alpha Vantage SYMBOL_SEARCH
- */
 async function searchSymbol(rawSymbol: string) {
   const url = `https://www.alphavantage.co/query?function=SYMBOL_SEARCH&keywords=${rawSymbol}&apikey=${ALPHA_API_KEY}`;
   const response = await fetch(url);
@@ -18,21 +15,15 @@ async function searchSymbol(rawSymbol: string) {
   return bestMatch["1. symbol"];
 }
 
-/**
- * Fetch company overview data from Alpha Vantage
- */
 async function getCompanyOverview(symbol: string) {
   const url = `https://www.alphavantage.co/query?function=OVERVIEW&symbol=${symbol}&apikey=${ALPHA_API_KEY}`;
   const response = await fetch(url);
   return response.json();
 }
 
-/**
- * Simplify price data for analysis
- */
 function simplifyData(data: any) {
   const timeSeries = data["Time Series (Daily)"];
-  const dates = Object.keys(timeSeries).slice(0, 30); // last 30 days
+  const dates = Object.keys(timeSeries).slice(0, 30); 
 
   const history = dates.map((date) => ({
     date,
@@ -74,7 +65,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Stock symbol is required" }, { status: 400 });
     }
 
-    // 1️⃣ Find the correct Alpha Vantage symbol
     const alphaSymbol = await searchSymbol(rawSymbol);
     if (!alphaSymbol) {
       return NextResponse.json(
@@ -83,7 +73,6 @@ export async function POST(req: Request) {
       );
     }
 
-    // 2️⃣ Fetch TIME_SERIES_DAILY
     const priceRes = await fetch(
       `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${alphaSymbol}&apikey=${ALPHA_API_KEY}`
     );
@@ -104,10 +93,10 @@ export async function POST(req: Request) {
       );
     }
 
-    // 3️⃣ Fetch company overview
+  
     const overviewData = await getCompanyOverview(alphaSymbol);
 
-    // 4️⃣ Transform price data
+
     const analysisReadyData = simplifyData(priceData);
 
     return NextResponse.json({

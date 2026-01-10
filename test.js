@@ -1,9 +1,7 @@
-// testBSEApi.js
 
-// Replace with your local Next.js API URL
-const API_URL = "http://localhost:3000/api/stock"; // <- update to your route
+const API_URL = "http://localhost:3000/api/stock"; 
 
-// The stock symbol you want to test
+
 const testSymbol = "500325";
 
 async function testAPI(symbol) {
@@ -16,20 +14,19 @@ async function testAPI(symbol) {
       body: JSON.stringify({ symbol }),
     });
 
-    // Try to parse JSON
-    let data;
-    const text = await response.text(); // get raw text first
 
+    let data;
+    const text = await response.text();
     try {
-      data = JSON.parse(text); // attempt to parse JSON
+      data = JSON.parse(text); 
     } catch {
-      console.error("⚠️ Response is not JSON. Here's the raw response:\n", text);
+      console.error(" Response is not JSON. Here's the raw response:\n", text);
       return;
     }
 
-    console.log("✅ API Response:\n", JSON.stringify(data, null, 2));
+    console.log(" API Response:\n", JSON.stringify(data, null, 2));
   } catch (err) {
-    console.error("❌ Error calling API:", err);
+    console.error(" Error calling API:", err);
   }
 }
 

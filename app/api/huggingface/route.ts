@@ -18,75 +18,73 @@ const db = admin.firestore();
 /* ---------------- Configurations ---------------- */
 const hf = createHuggingFace({ apiKey: process.env.HF_LLM_KEY });
 
-/* ---------------- Mock Stock Data for Fallback ---------------- */
-function generateMockStockData(symbol: string) {
-  const price = Math.floor(Math.random() * 2000) + 1000;
-  const change = (Math.random() * 200 - 100).toFixed(2);
-  const changePercent = ((parseFloat(change) / price) * 100).toFixed(2);
+// function generateMockStockData(symbol: string) {
+//   const price = Math.floor(Math.random() * 2000) + 1000;
+//   const change = (Math.random() * 200 - 100).toFixed(2);
+//   const changePercent = ((parseFloat(change) / price) * 100).toFixed(2);
 
-  return {
-    success: true,
-    symbol: symbol.toUpperCase() + ".BOM",
-    baseSymbol: symbol.toUpperCase(),
-    latestPrice: price.toFixed(2),
-    change,
-    changePercent,
-    average30Day: (price * 0.98).toFixed(2),
-    high52Week: (price * 1.2).toFixed(2),
-    low52Week: (price * 0.8).toFixed(2),
-    avgVolume: "5000000",
-    last5Days: [
-      {
-        date: new Date(Date.now() - 0 * 86400000).toISOString().split("T")[0],
-        close: price,
-        high: price * 1.02,
-        low: price * 0.98,
-        volume: 4500000,
-      },
-      {
-        date: new Date(Date.now() - 1 * 86400000).toISOString().split("T")[0],
-        close: price * 0.99,
-        high: price * 1.01,
-        low: price * 0.97,
-        volume: 5200000,
-      },
-      {
-        date: new Date(Date.now() - 2 * 86400000).toISOString().split("T")[0],
-        close: price * 0.98,
-        high: price * 1.0,
-        low: price * 0.96,
-        volume: 4800000,
-      },
-      {
-        date: new Date(Date.now() - 3 * 86400000).toISOString().split("T")[0],
-        close: price * 1.01,
-        high: price * 1.03,
-        low: price * 0.99,
-        volume: 5100000,
-      },
-      {
-        date: new Date(Date.now() - 4 * 86400000).toISOString().split("T")[0],
-        close: price * 1.02,
-        high: price * 1.04,
-        low: price * 1.0,
-        volume: 4700000,
-      },
-    ],
-    companyInfo: {
-      name: symbol.toUpperCase(),
-      description: `${symbol.toUpperCase()} is a major company listed on the BSE.`,
-      sector: "Diversified",
-      industry: "Finance & Services",
-      marketCap: "2000000 Cr",
-      peRatio: "15.5",
-      dividendYield: "2.8%",
-      profitMargin: "12.5%",
-    },
-    lastRefreshed: new Date().toISOString().split("T")[0],
-  };
-}
+//   return {
+//     success: true,
+//     symbol: symbol.toUpperCase() + ".BOM",
+//     baseSymbol: symbol.toUpperCase(),
+//     latestPrice: price.toFixed(2),
+//     change,
+//     changePercent,
+//     average30Day: (price * 0.98).toFixed(2),
+//     high52Week: (price * 1.2).toFixed(2),
+//     low52Week: (price * 0.8).toFixed(2),
+//     avgVolume: "5000000",
+//     last5Days: [
+//       {
+//         date: new Date(Date.now() - 0 * 86400000).toISOString().split("T")[0],
+//         close: price,
+//         high: price * 1.02,
+//         low: price * 0.98,
+//         volume: 4500000,
+//       },
+//       {
+//         date: new Date(Date.now() - 1 * 86400000).toISOString().split("T")[0],
+//         close: price * 0.99,
+//         high: price * 1.01,
+//         low: price * 0.97,
+//         volume: 5200000,
+//       },
+//       {
+//         date: new Date(Date.now() - 2 * 86400000).toISOString().split("T")[0],
+//         close: price * 0.98,
+//         high: price * 1.0,
+//         low: price * 0.96,
+//         volume: 4800000,
+//       },
+//       {
+//         date: new Date(Date.now() - 3 * 86400000).toISOString().split("T")[0],
+//         close: price * 1.01,
+//         high: price * 1.03,
+//         low: price * 0.99,
+//         volume: 5100000,
+//       },
+//       {
+//         date: new Date(Date.now() - 4 * 86400000).toISOString().split("T")[0],
+//         close: price * 1.02,
+//         high: price * 1.04,
+//         low: price * 1.0,
+//         volume: 4700000,
+//       },
+//     ],
+//     companyInfo: {
+//       name: symbol.toUpperCase(),
+//       description: `${symbol.toUpperCase()} is a major company listed on the BSE.`,
+//       sector: "Diversified",
+//       industry: "Finance & Services",
+//       marketCap: "2000000 Cr",
+//       peRatio: "15.5",
+//       dividendYield: "2.8%",
+//       profitMargin: "12.5%",
+//     },
+//     lastRefreshed: new Date().toISOString().split("T")[0],
+//   };
+// }
 
-/* ---------------- Helper Functions with Fallbacks ---------------- */
 async function analyzeWithFinBERT(text: string) {
   try {
     console.log("[SENTIMENT] Calling FinBERT API...");
@@ -131,7 +129,6 @@ async function analyzeWithFinBERT(text: string) {
   } catch (error) {
     console.warn("[SENTIMENT] FinBERT failed, using keyword fallback:", error);
 
-    // Fallback: Simple keyword-based sentiment
     const lowerText = text.toLowerCase();
     const bullishWords = [
       "strong",
@@ -190,34 +187,32 @@ async function fetchStockData(symbol: string) {
       console.warn(
         `[STOCK] API returned ${response.status}, using mock data`
       );
-      return generateMockStockData(symbol);
+      // return generateMockStockData(symbol);
     }
 
     const data = await response.json();
 
     if (data.error) {
       console.warn("[STOCK] API returned error, using mock data:", data.error);
-      return generateMockStockData(symbol);
+    //   return generateMockStockData(symbol);
     }
 
     console.log("[STOCK] Live data fetched successfully");
     return data;
   } catch (error) {
     console.warn("[STOCK] API call failed, using mock data:", error);
-    return generateMockStockData(symbol);
+    // return generateMockStockData(symbol);
   }
 }
 
-/* ----------------  Zod Schemas ---------------- */
 const stockParamsSchema = z.object({
-  symbol: z.string().describe("Stock symbol (e.g., RELIANCE, TCS)"),
+  symbol: z.string().describe("Stock symbol"),
 });
 
 const sentimentParamsSchema = z.object({
   text: z.string().describe("Financial text to analyze"),
 });
 
-/* ---------------- Main API Route with Enhanced Error Handling ---------------- */
 export async function POST(request: Request) {
   try {
     const { messages, chatId } = await request.json();
@@ -278,7 +273,7 @@ Be professional, accurate, and transparent about limitations.`,
               return data;
             } catch (error) {
               console.error("[TOOL] getStockData error:", error);
-              return generateMockStockData(symbol);
+              // return generateMockStockData(symbol);
             }
           },
         }),
