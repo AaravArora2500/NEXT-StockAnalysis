@@ -32,7 +32,6 @@ export default function ChatPage() {
   const scrollAreaRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
-  // Auto-scroll to bottom on new messages
   useEffect(() => {
     if (scrollAreaRef.current) {
       const scrollElement = scrollAreaRef.current.querySelector(
@@ -81,17 +80,13 @@ export default function ChatPage() {
         }),
       })
 
-      console.log("[CLIENT] Response status:", response.status)
-
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}))
-        console.error("[CLIENT] API error:", response.status, errorData)
         throw new Error(
           `API error ${response.status}: ${errorData.error || response.statusText}`
         )
       }
 
-      // Parse the response as a simple text stream
       const reader = response.body?.getReader()
       const decoder = new TextDecoder()
 
@@ -99,12 +94,11 @@ export default function ChatPage() {
         throw new Error("No response body from server")
       }
 
-      console.log("[CLIENT] Stream started...")
+      console.log("[CLIENT] Reader ready, beginning stream parse")
 
       let fullContent = ""
       const assistantId = `assistant_${Date.now()}`
 
-      // Create placeholder for assistant message
       setMessages((prev) => [
         ...prev,
         {
@@ -114,40 +108,81 @@ export default function ChatPage() {
         },
       ])
 
-      let chunkCount = 0
+      let buffer = ""
+      let eventLog = []
 
       while (true) {
         const { done, value } = await reader.read()
 
         if (done) {
-          console.log("[CLIENT] Stream completed, chunks:", chunkCount)
+          if (buffer.trim()) {
+            const line = buffer.trim()
+            console.log("[CLIENT] Final buffer line:", line)
+            eventLog.push(line)
+          }
+          console.log("[CLIENT] Stream complete. All events:", eventLog)
           break
         }
 
-        chunkCount++
         const chunk = decoder.decode(value, { stream: true })
-        fullContent += chunk
+        buffer += chunk
 
-        console.log(
-          `[CLIENT] Chunk ${chunkCount}: ${chunk.length} chars, total: ${fullContent.length}`
-        )
+        const lines = buffer.split("\n")
+        buffer = lines[lines.length - 1]
 
-        // Update message in real-time
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === assistantId ? { ...m, content: fullContent } : m
-          )
-        )
+        for (let i = 0; i < lines.length - 1; i++) {
+          const line = lines[i].trim()
+          if (!line) continue
+
+          eventLog.push(line)
+          console.log(`[CLIENT] Event ${eventLog.length}:`, line)
+
+          if (line.startsWith("data: ")) {
+            const dataStr = line.slice(6).trim()
+
+            if (dataStr === "[DONE]") {
+              console.log("[CLIENT] [DONE] received")
+              continue
+            }
+
+            try {
+              const parsed = JSON.parse(dataStr)
+              console.log("[CLIENT] Parsed event type:", parsed.type)
+              console.log("[CLIENT] Full parsed:", JSON.stringify(parsed))
+
+              // Check for text-delta
+              if (parsed.type === "text-delta" && parsed.delta) {
+                fullContent += parsed.delta
+                console.log(
+                  "[CLIENT] ✓ Got text-delta:",
+                  parsed.delta,
+                  "| Total length:",
+                  fullContent.length
+                )
+
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === assistantId
+                      ? { ...m, content: fullContent }
+                      : m
+                  )
+                )
+              } else if (parsed.type === "finish") {
+                console.log("[CLIENT] Stream finished")
+              } else {
+                console.log("[CLIENT] Event type not text-delta:", parsed.type)
+              }
+            } catch (e) {
+              console.error("[CLIENT] Failed to parse:", dataStr, e)
+            }
+          }
+        }
       }
-
-      console.log("[CLIENT] Final content:", fullContent.substring(0, 100))
     } catch (err) {
-      console.error("[CLIENT] Error:", err)
       const errorMessage =
         err instanceof Error ? err.message : "An error occurred"
       setError(errorMessage)
 
-      // Remove the placeholder assistant message on error
       setMessages((prev) =>
         prev.filter((m) => !(m.role === "assistant" && m.content === ""))
       )
@@ -165,7 +200,6 @@ export default function ChatPage() {
 
   return (
     <div className="flex flex-col h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-gray-950 dark:to-gray-900">
-      {/* Header */}
       <header className="border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 px-4 py-4 shadow-sm">
         <div className="max-w-4xl mx-auto flex items-center gap-3">
           <div className="flex items-center justify-center w-10 h-10 rounded-full bg-gradient-to-br from-blue-600 to-blue-700">
@@ -346,9 +380,8 @@ export default function ChatPage() {
         </div>
       </ScrollArea>
 
-      {/* Input */}
       <div className="border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 px-4 py-4 shadow-md">
-        <form onSubmit={handleSubmit} className="max-w-4xl mx-auto">
+        <div className="max-w-4xl mx-auto">
           <div className="flex gap-3 items-end">
             <div className="flex-1 relative">
               <Textarea
@@ -362,8 +395,7 @@ export default function ChatPage() {
               />
             </div>
             <Button
-              type="submit"
-              size="icon"
+              onClick={(e) => handleSubmit(e as any)}
               disabled={isLoading || !input.trim()}
               className="h-[60px] w-[60px] rounded-full bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-all"
             >
@@ -374,7 +406,7 @@ export default function ChatPage() {
               )}
             </Button>
           </div>
-        </form>
+        </div>
       </div>
     </div>
   )
