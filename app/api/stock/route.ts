@@ -8,12 +8,10 @@ export async function POST(req: Request) {
 
     let symbol: string | undefined;
 
-    /* --------- 1️⃣ Tool-first extraction --------- */
     if (typeof body.symbol === "string") {
       symbol = body.symbol.toUpperCase();
     }
 
-    /* --------- 2️⃣ Chat fallback (last user message) --------- */
     if (!symbol && Array.isArray(body.messages)) {
       const lastMessage = body.messages.at(-1)?.content;
 
@@ -33,7 +31,6 @@ export async function POST(req: Request) {
       );
     }
 
-    /* --------- 3️⃣ Call FastAPI microservice --------- */
     const res = await fetch(`${FASTAPI_URL}/stock/${symbol}`, {
       method: "GET",
     });
@@ -44,7 +41,6 @@ export async function POST(req: Request) {
 
     const result = await res.json();
 
-    /* --------- 4️⃣ Normalize response --------- */
     return NextResponse.json({
       success: true,
       symbol: result?.data?.symbol ?? symbol,

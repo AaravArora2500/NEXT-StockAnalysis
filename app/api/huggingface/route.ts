@@ -1,10 +1,7 @@
-// app/api/huggingface/route.ts
-
 import { generateText } from "ai"
 import { createHuggingFace } from "@ai-sdk/huggingface"
 import admin from "firebase-admin"
 
-/* ---------------- Firebase Init ---------------- */
 if (!admin.apps.length) {
   admin.initializeApp({
     credential: admin.credential.cert({
@@ -16,10 +13,7 @@ if (!admin.apps.length) {
 }
 const db = admin.firestore()
 
-/* ---------------- Hugging Face Init ---------------- */
 const hf = createHuggingFace({ apiKey: process.env.HF_LLM_KEY! })
-
-/* ---------------- Logic Helpers ---------------- */
 
 const BLACKLIST = new Set(["NSE", "BSE", "BUY", "SELL", "HOLD", "STOCK", "PRICE", "INDIA"])
 
@@ -75,15 +69,12 @@ async function generateChatTitle(userMessage: string): Promise<string> {
   }
 }
 
-/* ==================== API ROUTES ==================== */
-
-// GET /api/huggingface - Get all chats
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url)
     const chatId = url.searchParams.get("chatId")
 
-    // If chatId is provided, fetch specific chat
+   
     if (chatId) {
       const messagesSnapshot = await db
         .collection("chats")
@@ -101,7 +92,6 @@ export async function GET(req: Request) {
       return Response.json({ messages })
     }
 
-    // Otherwise, fetch all chats
     const chatsSnapshot = await db
       .collection("chats")
       .orderBy("createdAt", "desc")
@@ -137,14 +127,12 @@ export async function GET(req: Request) {
   }
 }
 
-// POST /api/huggingface - Send message and get response
 export async function POST(req: Request) {
   try {
     const { messages, chatId } = await req.json()
     const lastUserMessage = messages?.filter((m: any) => m.role === "user").pop()?.content ?? ""
     if (!lastUserMessage) return new Response("Invalid input", { status: 400 })
 
-    // 1. Context & History Retrieval
     let historyContext = ""
     let previousSymbol = null
     let chatExists = false
@@ -176,14 +164,12 @@ export async function POST(req: Request) {
       }
     }
 
-    // 2. State Resolution
     const activeSymbol = extractTicker(lastUserMessage) || previousSymbol
     const [stockData, sentiment] = await Promise.all([
       activeSymbol ? fetchStockData(activeSymbol) : Promise.resolve(null),
       analyzeSentiment(lastUserMessage)
     ])
 
-    // 3. Polished Prompt
     const prompt = `
 Role: Expert Stock Market Analyst (NSE/BSE).
 Context: ${historyContext ? "Ongoing chat session." : "New conversation."}
@@ -205,20 +191,16 @@ INSTRUCTIONS:
 - Keep the answer short but detailed.
 `.trim()
 
-    // 4. AI Generation
+  
     const { text: finalText } = await generateText({
       model: hf("meta-llama/Llama-3.1-8B-Instruct"),
       prompt,
       temperature: 0.8,
     })
-
-    // 5. Background Save with Chat Creation
     if (chatId) {
       const batch = db.batch()
       const chatRef = db.collection("chats").doc(chatId)
       const msgCol = chatRef.collection("messages")
-
-      // Create chat document if it doesn't exist
       if (!chatExists) {
         const title = await generateChatTitle(lastUserMessage)
         batch.set(chatRef, {
@@ -227,7 +209,6 @@ INSTRUCTIONS:
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         })
       } else {
-        // Update the updatedAt timestamp
         batch.update(chatRef, {
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         })
@@ -247,7 +228,6 @@ INSTRUCTIONS:
       await batch.commit()
     }
 
-    // 6. Streaming Simulation
     const encoder = new TextEncoder()
     const stream = new ReadableStream({
       async start(controller) {
@@ -271,7 +251,6 @@ INSTRUCTIONS:
   }
 }
 
-// DELETE /api/huggingface - Delete a specific chat
 export async function DELETE(req: Request) {
   try {
     const url = new URL(req.url)
@@ -281,21 +260,18 @@ export async function DELETE(req: Request) {
       return Response.json({ error: "Chat ID is required" }, { status: 400 })
     }
 
-    // Get all messages in the chat
     const messagesSnapshot = await db
       .collection("chats")
       .doc(chatId)
       .collection("messages")
       .get()
 
-    // Delete all messages
     const batch = db.batch()
     messagesSnapshot.docs.forEach((doc) => {
       batch.delete(doc.ref)
     })
     await batch.commit()
 
-    // Delete the chat document
     await db.collection("chats").doc(chatId).delete()
 
     return Response.json({ success: true })
