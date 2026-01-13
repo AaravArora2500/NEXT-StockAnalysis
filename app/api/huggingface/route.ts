@@ -1,9 +1,10 @@
-import { streamText, tool } from "ai";
-import { createHuggingFace } from "@ai-sdk/huggingface";
-import admin from "firebase-admin";
-import { z } from "zod";
+// app/api/huggingface/route.ts
 
-/* ---------------- Firebase Init (Safe Pattern) ---------------- */
+import { generateText } from "ai"
+import { createHuggingFace } from "@ai-sdk/huggingface"
+import admin from "firebase-admin"
+
+/* ---------------- Firebase Init ---------------- */
 if (!admin.apps.length) {
   admin.initializeApp({
     credential: admin.credential.cert({
@@ -11,291 +12,295 @@ if (!admin.apps.length) {
       clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
       privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n"),
     }),
-  });
+  })
 }
-const db = admin.firestore();
+const db = admin.firestore()
 
-/* ---------------- Configurations ---------------- */
-const hf = createHuggingFace({ apiKey: process.env.HF_LLM_KEY });
+/* ---------------- Hugging Face Init ---------------- */
+const hf = createHuggingFace({ apiKey: process.env.HF_LLM_KEY! })
 
-async function analyzeWithFinBERT(text: string) {
-  try {
-    console.log("[SENTIMENT] Calling FinBERT API...");
-    const response = await fetch(
-      "https://api-inference.huggingface.co/models/ProsusAI/finbert",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${process.env.HF_FINBERT_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          inputs: text,
-          options: { wait_for_model: true },
-        }),
-        signal: AbortSignal.timeout(10000),
-      }
-    );
+/* ---------------- Logic Helpers ---------------- */
 
-    if (!response.ok) {
-      console.warn(
-        `[SENTIMENT] FinBERT returned ${response.status}, using fallback`
-      );
-      throw new Error(`FinBERT API error: ${response.status}`);
-    }
+const BLACKLIST = new Set(["NSE", "BSE", "BUY", "SELL", "HOLD", "STOCK", "PRICE", "INDIA"])
 
-    const result = await response.json();
-
-    if (!Array.isArray(result) || !result[0]) {
-      throw new Error("Invalid FinBERT response format");
-    }
-
-    const best = result[0].reduce((a: any, b: any) =>
-      a.score > b.score ? a : b
-    );
-
-    console.log("[SENTIMENT] FinBERT analysis successful:", best.label);
-    return {
-      label: best.label,
-      confidence: Number(best.score.toFixed(3)),
-    };
-  } catch (error) {
-    console.warn("[SENTIMENT] FinBERT failed, using keyword fallback:", error);
-
-    const lowerText = text.toLowerCase();
-    const bullishWords = [
-      "strong",
-      "gain",
-      "positive",
-      "bullish",
-      "growth",
-      "profit",
-      "surge",
-      "rally",
-      "outperform",
-    ];
-    const bearishWords = [
-      "weak",
-      "loss",
-      "negative",
-      "bearish",
-      "decline",
-      "drop",
-      "fall",
-      "crash",
-      "underperform",
-    ];
-
-    const bullishCount = bullishWords.filter((w) =>
-      lowerText.includes(w)
-    ).length;
-    const bearishCount = bearishWords.filter((w) =>
-      lowerText.includes(w)
-    ).length;
-
-    let label = "NEUTRAL";
-    if (bullishCount > bearishCount) label = "POSITIVE";
-    else if (bearishCount > bullishCount) label = "NEGATIVE";
-
-    return {
-      label,
-      confidence: 0.7,
-    };
-  }
+function extractTicker(text: string): string | null {
+  const matches = text.match(/\b[A-Z]{2,10}\b/g)
+  if (!matches) return null
+  return matches.find(m => !BLACKLIST.has(m)) || null
 }
 
 async function fetchStockData(symbol: string) {
   try {
-    console.log(`[STOCK] Fetching data for ${symbol}...`);
-    const baseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000";
-
-    const response = await fetch(`${baseUrl}/api/stocks`, {
+    const baseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3000"
+    const res = await fetch(`${baseUrl}/api/stock`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ symbol }),
-      signal: AbortSignal.timeout(5000),
-    });
-
-    if (!response.ok) {
-      console.warn(
-        `[STOCK] API returned ${response.status}, using mock data`
-      );
-      // return generateMockStockData(symbol);
-    }
-
-    const data = await response.json();
-
-    if (data.error) {
-      console.warn("[STOCK] API returned error, using mock data:", data.error);
-    //   return generateMockStockData(symbol);
-    }
-
-    console.log("[STOCK] Live data fetched successfully");
-    return data;
-  } catch (error) {
-    console.warn("[STOCK] API call failed, using mock data:", error);
-    // return generateMockStockData(symbol);
+    })
+    return res.ok ? await res.json() : null
+  } catch {
+    return null
   }
 }
 
-const stockParamsSchema = z.object({
-  symbol: z.string().describe("Stock symbol"),
-});
-
-const sentimentParamsSchema = z.object({
-  text: z.string().describe("Financial text to analyze"),
-});
-
-export async function POST(request: Request) {
+async function analyzeSentiment(text: string) {
   try {
-    const { messages, chatId } = await request.json();
+    const res = await fetch("https://api-inference.huggingface.co/models/ProsusAI/finbert", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.HF_FINBERT_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ inputs: text }),
+    })
+    const result = await res.json()
+    const best = result[0].reduce((a: any, b: any) => (a.score > b.score ? a : b))
+    return `${best.label} (${best.score.toFixed(2)})`
+  } catch {
+    return "Neutral"
+  }
+}
 
-    console.log("[API] POST received, chatId:", chatId);
+async function generateChatTitle(userMessage: string): Promise<string> {
+  try {
+    const { text } = await generateText({
+      model: hf("meta-llama/Llama-3.1-8B-Instruct"),
+      prompt: `Generate a short title (max 5 words) for a stock market chat that starts with: "${userMessage.substring(0, 50)}". Return only the title, nothing else.`,
+      temperature: 0.7,
+    
+    })
+    return text.trim().substring(0, 60) || "New Chat"
+  } catch {
+    return `Chat - ${new Date().toLocaleDateString()}`
+  }
+}
 
-    if (!messages || !Array.isArray(messages) || messages.length === 0) {
-      console.error("[API] Invalid messages");
-      return new Response(
-        JSON.stringify({ error: "Invalid messages format" }),
-        { status: 400 }
-      );
+/* ==================== API ROUTES ==================== */
+
+// GET /api/huggingface - Get all chats
+export async function GET(req: Request) {
+  try {
+    const url = new URL(req.url)
+    const chatId = url.searchParams.get("chatId")
+
+    // If chatId is provided, fetch specific chat
+    if (chatId) {
+      const messagesSnapshot = await db
+        .collection("chats")
+        .doc(chatId)
+        .collection("messages")
+        .orderBy("createdAt", "asc")
+        .get()
+
+      const messages = messagesSnapshot.docs.map((doc) => ({
+        id: doc.id,
+        role: doc.data().role,
+        content: doc.data().content,
+      }))
+
+      return Response.json({ messages })
     }
 
-    console.log("[API] Streaming with", messages.length, "messages");
+    // Otherwise, fetch all chats
+    const chatsSnapshot = await db
+      .collection("chats")
+      .orderBy("createdAt", "desc")
+      .limit(50)
+      .get()
 
-    const result = await streamText({
-      model: hf("meta-llama/Llama-3.1-8B-Instruct"),
-      system: `You are an expert financial analyst specializing in Indian stock market analysis (BSE - Bombay Stock Exchange).
+    const chats = await Promise.all(
+      chatsSnapshot.docs.map(async (doc) => {
+        const messagesSnapshot = await db
+          .collection("chats")
+          .doc(doc.id)
+          .collection("messages")
+          .orderBy("createdAt", "asc")
+          .limit(1)
+          .get()
 
-Your expertise:
-- Stock price analysis and trend identification
-- Technical and fundamental analysis
-- Risk assessment and market sentiment
-- Company financial metrics
+        const firstMessage = messagesSnapshot.docs[0]?.data()
+        const preview = firstMessage?.content?.substring(0, 50) || "No messages"
 
-When analyzing stocks:
-1. Use getStockData tool to fetch current data
-2. Analyze price trends, support/resistance levels
-3. Evaluate company fundamentals if available
-4. Provide risk assessment
-5. Give investment perspective
-
-Always provide structured analysis with:
-- Current Price & Change
-- Trend Analysis (5-day and 30-day)
-- Key Support/Resistance Levels
-- Company Fundamentals
-- Risk Assessment
-- Investment Recommendation
-
-Be professional, accurate, and transparent about limitations.`,
-      messages,
-      temperature: 0.7,
-  
-
-      tools: {
-        getStockData: tool({
-          description:
-            "Fetch comprehensive stock data including price history, company information, and financial metrics for BSE stocks.",
-          inputSchema: stockParamsSchema,
-
-          execute: async ({ symbol }) => {
-            try {
-              console.log("[TOOL] getStockData executing for:", symbol);
-              const data = await fetchStockData(symbol);
-              console.log("[TOOL] getStockData completed");
-              return data;
-            } catch (error) {
-              console.error("[TOOL] getStockData error:", error);
-              // return generateMockStockData(symbol);
-            }
-          },
-        }),
-
-        analyzeFinancialSentiment: tool({
-          description:
-            "Analyze financial news, headlines, or statements for market sentiment (Bullish, Bearish, Neutral).",
-          inputSchema: sentimentParamsSchema,
-
-          execute: async ({ text }) => {
-            try {
-              console.log("[TOOL] analyzeFinancialSentiment executing");
-              const res = await analyzeWithFinBERT(text);
-
-              const sentimentMap: Record<string, string> = {
-                POSITIVE: "Bullish",
-                NEGATIVE: "Bearish",
-                NEUTRAL: "Neutral",
-              };
-
-              const result = {
-                sentiment: sentimentMap[res.label] || "Neutral",
-                confidence: res.confidence,
-                label: res.label,
-              };
-
-              console.log("[TOOL] analyzeFinancialSentiment completed:", result);
-              return result;
-            } catch (error) {
-              console.error("[TOOL] analyzeFinancialSentiment error:", error);
-              return {
-                sentiment: "Neutral",
-                confidence: 0.5,
-                error: "Sentiment analysis unavailable",
-              };
-            }
-          },
-        }),
-      },
-
-      onFinish: async ({ text }) => {
-        console.log("[STREAM] onFinish called, saving to Firebase");
-
-        if (!chatId) {
-          console.warn("[STREAM] No chatId provided, skipping save");
-          return;
+        return {
+          id: doc.id,
+          title: doc.data().title || `Chat - ${new Date(doc.data().createdAt?.toDate()).toLocaleDateString()}`,
+          createdAt: doc.data().createdAt?.toDate() || new Date(),
+          preview,
         }
+      })
+    )
 
-        try {
-          const messagesRef = db
-            .collection("chats")
-            .doc(chatId)
-            .collection("messages");
-
-          const userMessage = messages[messages.length - 1];
-
-          await messagesRef.add({
-            role: "user",
-            content: userMessage.content,
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          });
-
-          await messagesRef.add({
-            role: "assistant",
-            content: text,
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          });
-
-          console.log("[DB] Messages saved successfully");
-        } catch (err) {
-          console.error("[DB] Error saving messages:", err);
-        }
-      },
-
-      onError: ({ error }) => {
-        console.error("[STREAM] Error event:", error);
-      },
-    });
-
-    console.log("[API] Returning UI message stream response");
-    return result.toUIMessageStreamResponse();
+    return Response.json({ chats })
   } catch (error) {
-    console.error("[API] Fatal Error:", error);
-    return new Response(
-      JSON.stringify({
-        error: "Server Error",
-        details: error instanceof Error ? error.message : "Unknown error",
-      }),
-      { status: 500 }
-    );
+    console.error("Error fetching data:", error)
+    return Response.json({ error: "Failed to fetch data" }, { status: 500 })
+  }
+}
+
+// POST /api/huggingface - Send message and get response
+export async function POST(req: Request) {
+  try {
+    const { messages, chatId } = await req.json()
+    const lastUserMessage = messages?.filter((m: any) => m.role === "user").pop()?.content ?? ""
+    if (!lastUserMessage) return new Response("Invalid input", { status: 400 })
+
+    // 1. Context & History Retrieval
+    let historyContext = ""
+    let previousSymbol = null
+    let chatExists = false
+
+    if (chatId) {
+      try {
+        const chatDoc = await db.collection("chats").doc(chatId).get()
+        chatExists = chatDoc.exists
+      } catch {
+        chatExists = false
+      }
+
+      const historySnapshot = await db
+        .collection("chats")
+        .doc(chatId)
+        .collection("messages")
+        .orderBy("createdAt", "desc")
+        .limit(10)
+        .get()
+
+      const historyDocs = historySnapshot.docs.reverse()
+      historyContext = historyDocs
+        .map(d => `${d.data().role.toUpperCase()}: ${d.data().content}`)
+        .join("\n")
+
+      for (let i = historyDocs.length - 1; i >= 0; i--) {
+        const found = extractTicker(historyDocs[i].data().content)
+        if (found) { previousSymbol = found; break }
+      }
+    }
+
+    // 2. State Resolution
+    const activeSymbol = extractTicker(lastUserMessage) || previousSymbol
+    const [stockData, sentiment] = await Promise.all([
+      activeSymbol ? fetchStockData(activeSymbol) : Promise.resolve(null),
+      analyzeSentiment(lastUserMessage)
+    ])
+
+    // 3. Polished Prompt
+    const prompt = `
+Role: Expert Stock Market Analyst (NSE/BSE).
+Context: ${historyContext ? "Ongoing chat session." : "New conversation."}
+Status: Ticker: ${activeSymbol || "None identified"} | Data: ${JSON.stringify(stockData) || "No live data available"} | User Sentiment: ${sentiment}
+
+USER REQUEST: "${lastUserMessage}"
+
+INSTRUCTIONS:
+- Strictly answer only stock market or financial education queries.
+- Refer to ${activeSymbol || "the requested stock"} if the user says "it" or "this" otherwise ignore its usage at all times.
+- Required Response Structure when user refers to ${activeSymbol}: 
+  1. Current Price
+  2. Trend Analysis
+  3. Levels (Support/Resistance)
+  4. Risk Assessment
+  5. Investment View
+- Use Indian terminology (Lakhs/Crores) and professional tone.
+- Answer the queries the user has regarding the stock market. Do not use ${activeSymbol} for general stock market queries it is not required.
+- Keep the answer short but detailed.
+`.trim()
+
+    // 4. AI Generation
+    const { text: finalText } = await generateText({
+      model: hf("meta-llama/Llama-3.1-8B-Instruct"),
+      prompt,
+      temperature: 0.8,
+    })
+
+    // 5. Background Save with Chat Creation
+    if (chatId) {
+      const batch = db.batch()
+      const chatRef = db.collection("chats").doc(chatId)
+      const msgCol = chatRef.collection("messages")
+
+      // Create chat document if it doesn't exist
+      if (!chatExists) {
+        const title = await generateChatTitle(lastUserMessage)
+        batch.set(chatRef, {
+          title,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        })
+      } else {
+        // Update the updatedAt timestamp
+        batch.update(chatRef, {
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        })
+      }
+
+      const entries = [
+        { role: "user", content: lastUserMessage },
+        { role: "assistant", content: finalText }
+      ]
+      
+      entries.forEach(entry => {
+        batch.set(msgCol.doc(), {
+          ...entry,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        })
+      })
+      await batch.commit()
+    }
+
+    // 6. Streaming Simulation
+    const encoder = new TextEncoder()
+    const stream = new ReadableStream({
+      async start(controller) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "start" })}\n\n`))
+        const tokens = finalText.split(/(\s+)/)
+        for (const token of tokens) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "token", text: token })}\n\n`))
+          await new Promise(r => setTimeout(r, 10))
+        }
+        controller.enqueue(encoder.encode(`data: [DONE]\n\n`))
+        controller.close()
+      },
+    })
+
+    return new Response(stream, {
+      headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
+    })
+  } catch (err) {
+    console.error(err)
+    return new Response("Internal Error", { status: 500 })
+  }
+}
+
+// DELETE /api/huggingface - Delete a specific chat
+export async function DELETE(req: Request) {
+  try {
+    const url = new URL(req.url)
+    const chatId = url.searchParams.get("chatId")
+
+    if (!chatId) {
+      return Response.json({ error: "Chat ID is required" }, { status: 400 })
+    }
+
+    // Get all messages in the chat
+    const messagesSnapshot = await db
+      .collection("chats")
+      .doc(chatId)
+      .collection("messages")
+      .get()
+
+    // Delete all messages
+    const batch = db.batch()
+    messagesSnapshot.docs.forEach((doc) => {
+      batch.delete(doc.ref)
+    })
+    await batch.commit()
+
+    // Delete the chat document
+    await db.collection("chats").doc(chatId).delete()
+
+    return Response.json({ success: true })
+  } catch (error) {
+    console.error("Error deleting chat:", error)
+    return Response.json({ error: "Failed to delete chat" }, { status: 500 })
   }
 }

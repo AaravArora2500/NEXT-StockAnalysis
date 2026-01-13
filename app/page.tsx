@@ -1,19 +1,9 @@
 "use client"
 
-import { useState, useRef, useEffect } from "react"
-import { Send, Loader2, Bot, User, TrendingUp } from "lucide-react"
-import { Button } from "@/components/ui/button"
-import { Textarea } from "@/components/ui/textarea"
-import { ScrollArea } from "@/components/ui/scroll-area"
-import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { useRef, useEffect, useState } from "react"
+import { Send, Loader2, TrendingUp, ArrowRight, Menu, X, Trash2, Plus } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-
-interface Message {
-  id: string
-  role: "user" | "assistant"
-  content: string
-}
 
 const EXAMPLE_QUERIES = [
   "Analyze RELIANCE stock price trends",
@@ -22,173 +12,218 @@ const EXAMPLE_QUERIES = [
   "How is ICICIBANK performing?",
 ]
 
+interface Message {
+  id: string
+  role: "user" | "assistant"
+  content: string
+}
+
+interface ChatHistory {
+  id: string
+  title: string
+  createdAt: string
+  preview: string
+}
+
 export default function ChatPage() {
+  const [chatId, setChatId] = useState(() => `chat_${Date.now()}`)
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState("")
   const [isLoading, setIsLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [chatId] = useState(() => `chat_${Date.now()}`)
-
+  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [isMobile, setIsMobile] = useState(false)
+  const [chatHistory, setChatHistory] = useState<ChatHistory[]>([])
+  const [isLoadingHistory, setIsLoadingHistory] = useState(true)
   const scrollAreaRef = useRef<HTMLDivElement>(null)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const [showScrollbar, setShowScrollbar] = useState(false)
 
   useEffect(() => {
-    if (scrollAreaRef.current) {
-      const scrollElement = scrollAreaRef.current.querySelector(
-        "[data-radix-scroll-area-viewport]"
-      )
-      if (scrollElement) {
-        setTimeout(() => {
-          scrollElement.scrollTop = scrollElement.scrollHeight
-        }, 0)
+    fetchChatHistory()
+    
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth < 768)
+      setSidebarOpen(window.innerWidth >= 768)
+    }
+    
+    checkMobile()
+    window.addEventListener("resize", checkMobile)
+    return () => window.removeEventListener("resize", checkMobile)
+  }, [])
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (scrollAreaRef.current) {
+        scrollAreaRef.current.scrollTop = scrollAreaRef.current.scrollHeight
       }
+    }, 0)
+    return () => clearTimeout(timer)
+  }, [messages])
+
+  const handleScroll = () => {
+    if (scrollAreaRef.current) {
+      const { scrollHeight, clientHeight, scrollTop } = scrollAreaRef.current
+      const isScrollable = scrollHeight > clientHeight
+      setShowScrollbar(isScrollable)
+    }
+  }
+
+  useEffect(() => {
+    const scrollArea = scrollAreaRef.current
+    if (scrollArea) {
+      scrollArea.addEventListener("scroll", handleScroll)
+      handleScroll()
+      return () => scrollArea.removeEventListener("scroll", handleScroll)
     }
   }, [messages])
 
-  const handleSubmit = async (e: React.FormEvent, messageText?: string) => {
+  const fetchChatHistory = async () => {
+    try {
+      setIsLoadingHistory(true)
+      const response = await fetch("/api/huggingface")
+      if (!response.ok) throw new Error("Failed to fetch history")
+      const data = await response.json()
+      setChatHistory(data.chats || [])
+    } catch (error) {
+      console.error("Error fetching chat history:", error)
+      setChatHistory([])
+    } finally {
+      setIsLoadingHistory(false)
+    }
+  }
+
+  const loadChat = async (id: string) => {
+    try {
+      const response = await fetch(`/api/huggingface?chatId=${id}`)
+      if (!response.ok) throw new Error("Failed to load chat")
+      const data = await response.json()
+      setChatId(id)
+      setMessages(data.messages || [])
+      if (isMobile) setSidebarOpen(false)
+    } catch (error) {
+      console.error("Error loading chat:", error)
+    }
+  }
+
+  const deleteChat = async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation()
+    try {
+      const response = await fetch(`/api/huggingface?chatId=${id}`, { method: "DELETE" })
+      if (!response.ok) throw new Error("Failed to delete chat")
+      setChatHistory(prev => prev.filter(chat => chat.id !== id))
+      if (chatId === id) {
+        setChatId(`chat_${Date.now()}`)
+        setMessages([])
+      }
+    } catch (error) {
+      console.error("Error deleting chat:", error)
+    }
+  }
+
+  const startNewChat = () => {
+    setChatId(`chat_${Date.now()}`)
+    setMessages([])
+    if (isMobile) setSidebarOpen(false)
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-
-    const textToSend = messageText || input.trim()
-
-    if (!textToSend || isLoading) return
+    if (!input.trim()) return
 
     const userMessage: Message = {
-      id: Date.now().toString(),
+      id: `msg_${Date.now()}`,
       role: "user",
-      content: textToSend,
+      content: input,
     }
-
-    setMessages((prev) => [...prev, userMessage])
+    const userInput = input
+    setMessages(prev => [...prev, userMessage])
     setInput("")
     setIsLoading(true)
-    setError(null)
 
     try {
-      console.log("[CLIENT] Sending message:", textToSend)
+      const apiMessages = [
+        ...messages,
+        { role: "user", content: userInput },
+      ]
 
       const response = await fetch("/api/huggingface", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          messages: apiMessages,
           chatId,
-          messages: [...messages, userMessage].map((m) => ({
-            role: m.role,
-            content: m.content,
-          })),
         }),
       })
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}))
-        throw new Error(
-          `API error ${response.status}: ${errorData.error || response.statusText}`
-        )
-      }
+      if (!response.ok) throw new Error(`API error: ${response.status}`)
 
-      const reader = response.body?.getReader()
+      const reader = response.body!.getReader()
       const decoder = new TextDecoder()
+      let assistantContent = ""
+      const assistantMessageId = crypto.randomUUID()
 
-      if (!reader) {
-        throw new Error("No response body from server")
-      }
-
-      console.log("[CLIENT] Reader ready, beginning stream parse")
-
-      let fullContent = ""
-      const assistantId = `assistant_${Date.now()}`
-
-      setMessages((prev) => [
+      setMessages(prev => [
         ...prev,
         {
-          id: assistantId,
+          id: assistantMessageId,
           role: "assistant",
           content: "",
         },
       ])
 
-      let buffer = ""
-      let eventLog = []
-
       while (true) {
-        const { done, value } = await reader.read()
-
-        if (done) {
-          if (buffer.trim()) {
-            const line = buffer.trim()
-            console.log("[CLIENT] Final buffer line:", line)
-            eventLog.push(line)
+        const { value, done } = await reader.read()
+        if (done) break
+        
+        const chunk = decoder.decode(value)
+        const lines = chunk.split("\n")
+        
+        for (const line of lines) {
+          if (!line.startsWith("data:")) continue
+          
+          const raw = line.replace("data:", "").trim()
+          if (!raw || raw === "[DONE]") {
+            setIsLoading(false)
+            fetchChatHistory()
+            return
           }
-          console.log("[CLIENT] Stream complete. All events:", eventLog)
-          break
-        }
-
-        const chunk = decoder.decode(value, { stream: true })
-        buffer += chunk
-
-        const lines = buffer.split("\n")
-        buffer = lines[lines.length - 1]
-
-        for (let i = 0; i < lines.length - 1; i++) {
-          const line = lines[i].trim()
-          if (!line) continue
-
-          eventLog.push(line)
-          console.log(`[CLIENT] Event ${eventLog.length}:`, line)
-
-          if (line.startsWith("data: ")) {
-            const dataStr = line.slice(6).trim()
-
-            if (dataStr === "[DONE]") {
-              console.log("[CLIENT] [DONE] received")
-              continue
-            }
-
-            try {
-              const parsed = JSON.parse(dataStr)
-              console.log("[CLIENT] Parsed event type:", parsed.type)
-              console.log("[CLIENT] Full parsed:", JSON.stringify(parsed))
-
-              // Check for text-delta
-              if (parsed.type === "text-delta" && parsed.delta) {
-                fullContent += parsed.delta
-                console.log(
-                  "[CLIENT] ✓ Got text-delta:",
-                  parsed.delta,
-                  "| Total length:",
-                  fullContent.length
-                )
-
-                setMessages((prev) =>
-                  prev.map((m) =>
-                    m.id === assistantId
-                      ? { ...m, content: fullContent }
-                      : m
-                  )
-                )
-              } else if (parsed.type === "finish") {
-                console.log("[CLIENT] Stream finished")
-              } else {
-                console.log("[CLIENT] Event type not text-delta:", parsed.type)
-              }
-            } catch (e) {
-              console.error("[CLIENT] Failed to parse:", dataStr, e)
-            }
+          
+          let payload
+          try {
+            payload = JSON.parse(raw)
+          } catch {
+            continue
+          }
+          
+          if (payload.type === "token") {
+            assistantContent += payload.text
+            setMessages(prev =>
+              prev.map(m =>
+                m.id === assistantMessageId
+                  ? { ...m, content: assistantContent }
+                  : m
+              )
+            )
           }
         }
       }
-    } catch (err) {
-      const errorMessage =
-        err instanceof Error ? err.message : "An error occurred"
-      setError(errorMessage)
 
-      setMessages((prev) =>
-        prev.filter((m) => !(m.role === "assistant" && m.content === ""))
-      )
+    } catch (error) {
+      console.error("Chat error:", error)
+      setMessages(prev => [
+        ...prev,
+        {
+          id: `msg_${Date.now()}_error`,
+          role: "assistant",
+          content: `Error: ${error instanceof Error ? error.message : "Failed to get response"}`,
+        },
+      ])
     } finally {
       setIsLoading(false)
     }
+  }
+
+  const handleAppend = (content: string) => {
+    setInput(content)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -199,214 +234,219 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-gray-950 dark:to-gray-900">
-      <header className="border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 px-4 py-4 shadow-sm">
-        <div className="max-w-4xl mx-auto flex items-center gap-3">
-          <div className="flex items-center justify-center w-10 h-10 rounded-full bg-gradient-to-br from-blue-600 to-blue-700">
-            <TrendingUp className="w-6 h-6 text-white" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">
-              Stock Analysis Assistant
-            </h1>
-            <p className="text-sm text-gray-600 dark:text-gray-400">
-              Real-time BSE stock analysis and financial insights
-            </p>
+    <div className="flex w-screen h-screen bg-slate-950" style={{
+      scrollbarWidth: showScrollbar ? 'auto' : 'none',
+    }}>
+      {/* Sidebar */}
+      <div className={`${sidebarOpen ? "w-64" : "w-0"} transition-all duration-300 border-r border-slate-800/50 bg-slate-900/50 backdrop-blur-sm flex flex-col overflow-hidden flex-shrink-0 mt-16`}>
+        <div className="p-4 border-b border-slate-800/50">
+          <button
+            onClick={startNewChat}
+            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-gradient-to-r from-emerald-500 to-cyan-500 text-white font-medium hover:shadow-lg hover:shadow-emerald-500/30 transition-all duration-200"
+          >
+            <Plus className="w-4 h-4" />
+            New Chat
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto">
+          <div className="p-4 space-y-2">
+            {isLoadingHistory ? (
+              <div className="text-center py-8">
+                <Loader2 className="w-4 h-4 animate-spin text-emerald-400 mx-auto" />
+              </div>
+            ) : chatHistory.length === 0 ? (
+              <p className="text-sm text-slate-500 text-center py-8">No chat history yet</p>
+            ) : (
+              chatHistory.map(chat => (
+                <div
+                  key={chat.id}
+                  onClick={() => loadChat(chat.id)}
+                  className="group p-3 rounded-lg bg-slate-800/30 hover:bg-slate-800/50 cursor-pointer transition-all duration-200 border border-slate-800/30 hover:border-emerald-500/30"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex-1 min-w-0">
+                      <h3 className="text-sm font-medium text-slate-200 truncate group-hover:text-emerald-400 transition-colors">
+                        {chat.title}
+                      </h3>
+                      <p className="text-xs text-slate-500 truncate mt-1">
+                        {chat.preview}
+                      </p>
+                      <p className="text-xs text-slate-600 mt-2">
+                        {new Date(chat.createdAt).toLocaleDateString()}
+                      </p>
+                    </div>
+                    <button
+                      onClick={(e) => deleteChat(e, chat.id)}
+                      className="p-1.5 rounded opacity-0 group-hover:opacity-100 hover:bg-red-500/20 text-slate-400 hover:text-red-400 transition-all flex-shrink-0"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </div>
-      </header>
+      </div>
 
-      <ScrollArea className="flex-1 px-4 py-8" ref={scrollAreaRef}>
-        <div className="max-w-4xl mx-auto space-y-6">
-          {messages.length === 0 && (
-            <div className="text-center py-12">
-              <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-gradient-to-br from-blue-600 to-blue-700 mb-4">
-                <TrendingUp className="w-8 h-8 text-white" />
-              </div>
-              <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-2">
-                Welcome to Stock Analysis
-              </h2>
-              <p className="text-gray-600 dark:text-gray-400 mb-8">
-                Ask me about any BSE stock for real-time analysis and financial summaries
-              </p>
+      {/* Main Content */}
+      <div className="flex-1 flex flex-col w-full h-full bg-slate-950 relative overflow-hidden">
+        {/* Animated Background */}
+        <div className="absolute inset-0 -z-10 overflow-hidden pointer-events-none">
+          <div className="absolute inset-0 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950" />
+          <div className="absolute top-0 -left-40 w-80 h-80 bg-emerald-500/10 rounded-full mix-blend-multiply filter blur-3xl animate-pulse" />
+          <div className="absolute -bottom-8 right-40 w-80 h-80 bg-cyan-500/10 rounded-full mix-blend-multiply filter blur-3xl animate-pulse delay-2000" />
+        </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {EXAMPLE_QUERIES.map((query, idx) => (
-                  <button
-                    key={idx}
-                    onClick={(e) => handleSubmit(e as any, query)}
-                    disabled={isLoading}
-                    className="text-left p-4 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 hover:bg-blue-50 dark:hover:bg-gray-700 disabled:opacity-50 transition-colors text-sm text-gray-700 dark:text-gray-300"
-                  >
-                    {query}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {messages.map((message) => (
-            <div
-              key={message.id}
-              className={`flex gap-4 ${
-                message.role === "user" ? "flex-row-reverse" : "flex-row"
-              }`}
+        {/* Header with Toggle */}
+        <div className="border-b border-slate-800/50 bg-slate-950/50 backdrop-blur-xl flex-shrink-0">
+          <div className="w-full px-4 sm:px-6 py-4 flex items-center justify-between">
+            <button
+              onClick={() => setSidebarOpen(!sidebarOpen)}
+              className="p-2 hover:bg-slate-800/50 rounded-lg transition-colors md:hidden"
             >
-              <Avatar className="w-8 h-8 mt-1 flex-shrink-0">
-                <AvatarFallback
-                  className={
-                    message.role === "user"
-                      ? "bg-gradient-to-br from-slate-500 to-slate-600"
-                      : "bg-gradient-to-br from-blue-600 to-blue-700"
-                  }
-                >
-                  {message.role === "user" ? (
-                    <User className="w-4 h-4 text-white" />
-                  ) : (
-                    <Bot className="w-4 h-4 text-white" />
-                  )}
-                </AvatarFallback>
-              </Avatar>
+              {sidebarOpen ? (
+                <X className="w-6 h-6 text-slate-300" />
+              ) : (
+                <Menu className="w-6 h-6 text-slate-300" />
+              )}
+            </button>
+            <h1 className="text-lg font-bold bg-gradient-to-r from-emerald-400 via-cyan-400 to-emerald-500 bg-clip-text text-transparent">
+              MarketVista
+            </h1>
+            <div className="w-10" />
+          </div>
+        </div>
 
-              <div
-                className={`flex-1 ${
-                  message.role === "user" ? "flex justify-end" : ""
-                }`}
-              >
-                <div
-                  className={`rounded-2xl px-4 py-3 max-w-[85%] ${
-                    message.role === "user"
-                      ? "bg-blue-600 dark:bg-blue-700 text-white rounded-br-none"
-                      : "bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-bl-none"
-                  }`}
-                >
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    className={`prose prose-sm max-w-none ${
-                      message.role === "user"
-                        ? "text-white"
-                        : "dark:prose-invert"
-                    }`}
-                    components={{
-                      p: ({ children }) => (
-                        <p className="mb-2 last:mb-0 text-sm">{children}</p>
-                      ),
-                      h2: ({ children }) => (
-                        <h2 className="font-bold text-base mt-3 mb-2">
-                          {children}
-                        </h2>
-                      ),
-                      h3: ({ children }) => (
-                        <h3 className="font-semibold text-base mt-3 mb-2">
-                          {children}
-                        </h3>
-                      ),
-                      strong: ({ children }) => (
-                        <strong className="font-semibold">{children}</strong>
-                      ),
-                      code: ({ inline, children, ...props }: any) =>
-                        inline ? (
-                          <code
-                            className={`px-2 py-1 rounded text-xs font-mono ${
-                              message.role === "user"
-                                ? "bg-blue-500 bg-opacity-50"
-                                : "bg-gray-200 dark:bg-gray-700"
-                            }`}
-                            {...props}
-                          >
-                            {children}
-                          </code>
-                        ) : (
-                          <pre className="p-3 rounded bg-gray-100 dark:bg-gray-900 text-xs overflow-x-auto my-2">
-                            <code {...props}>{children}</code>
-                          </pre>
-                        ),
-                      ul: ({ children }) => (
-                        <ul className="list-disc list-inside my-2 space-y-1">
-                          {children}
-                        </ul>
-                      ),
-                      ol: ({ children }) => (
-                        <ol className="list-decimal list-inside my-2 space-y-1">
-                          {children}
-                        </ol>
-                      ),
-                      li: ({ children }) => <li className="text-sm">{children}</li>,
-                      table: ({ children }) => (
-                        <div className="overflow-x-auto my-2">
-                          <table className="text-xs border-collapse">
-                            {children}
-                          </table>
+        {/* Chat Area */}
+        <div 
+          className="flex-1 overflow-y-auto" 
+          ref={scrollAreaRef}
+          style={{
+            scrollbarWidth: showScrollbar ? 'thin' : 'none',
+            scrollbarColor: showScrollbar ? '#10b981 #1e293b' : 'transparent transparent'
+          }}
+        >
+          <style>{`
+            div::-webkit-scrollbar {
+              width: ${showScrollbar ? '8px' : '0px'};
+              transition: width 0.3s;
+            }
+            div::-webkit-scrollbar-track {
+              background: transparent;
+            }
+            div::-webkit-scrollbar-thumb {
+              background: ${showScrollbar ? '#10b981' : 'transparent'};
+              border-radius: 4px;
+            }
+            div::-webkit-scrollbar-thumb:hover {
+              background: ${showScrollbar ? '#059669' : 'transparent'};
+            }
+          `}</style>
+          <div className="w-full px-4 sm:px-6 py-8 space-y-6">
+            {messages.length === 0 && (
+              <div className="flex flex-col items-center justify-center min-h-full text-center space-y-8">
+                <div className="space-y-4">
+                  <div className="inline-flex items-center justify-center p-4 bg-gradient-to-br from-emerald-500/20 to-cyan-500/20 border border-emerald-500/30 rounded-2xl backdrop-blur-sm">
+                    <TrendingUp className="w-10 h-10 text-emerald-400" />
+                  </div>
+                  <div>
+                    <h2 className="text-4xl sm:text-5xl font-bold bg-gradient-to-r from-emerald-400 via-cyan-400 to-emerald-500 bg-clip-text text-transparent mb-3">
+                      Market Intelligence
+                    </h2>
+                    <p className="text-slate-400 text-lg max-w-2xl mx-auto">
+                      Unlock real-time insights on Indian equities with AI-powered analysis
+                    </p>
+                  </div>
+                </div>
+
+                <div className="w-full max-w-3xl space-y-3">
+                  <p className="text-sm text-slate-500 font-medium">Popular queries:</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {EXAMPLE_QUERIES.map((query) => (
+                      <button
+                        key={query}
+                        onClick={() => handleAppend(query)}
+                        className="group text-left p-4 rounded-xl bg-slate-900/60 border border-slate-800 hover:border-emerald-500/60 hover:bg-slate-900/80 backdrop-blur-sm transition-all duration-300 hover:shadow-lg hover:shadow-emerald-500/10"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <span className="text-sm text-slate-300 group-hover:text-emerald-300 transition-colors">
+                            {query}
+                          </span>
+                          <ArrowRight className="w-4 h-4 text-slate-600 group-hover:text-emerald-400 flex-shrink-0 mt-0.5 transition-all duration-300 group-hover:translate-x-1" />
                         </div>
-                      ),
-                      th: ({ children }) => (
-                        <th className="border border-gray-300 dark:border-gray-600 px-2 py-1 font-semibold">
-                          {children}
-                        </th>
-                      ),
-                      td: ({ children }) => (
-                        <td className="border border-gray-300 dark:border-gray-600 px-2 py-1">
-                          {children}
-                        </td>
-                      ),
-                    }}
-                  >
-                    {message.content}
-                  </ReactMarkdown>
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            )}
 
-          {isLoading && (
-            <div className="flex gap-4">
-              <Avatar className="w-8 h-8 mt-1 flex-shrink-0">
-                <AvatarFallback className="bg-gradient-to-br from-blue-600 to-blue-700">
-                  <Bot className="w-4 h-4 text-white" />
-                </AvatarFallback>
-              </Avatar>
-              <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl px-4 py-3">
-                <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
+            {messages.map((m) => (
+              <div key={m.id} className={`flex gap-4 animate-in fade-in slide-in-from-bottom-3 ${m.role === "user" ? "flex-row-reverse" : "flex-row"}`}>
+                <div className={`w-9 h-9 rounded-xl flex-shrink-0 flex items-center justify-center text-xs font-bold shadow-lg ${
+                  m.role === "user" 
+                    ? "bg-gradient-to-br from-emerald-500 to-cyan-500 text-white" 
+                    : "bg-slate-800 border border-slate-700 text-slate-300"
+                }`}>
+                  {m.role === "user" ? "You" : "AI"}
+                </div>
+
+                <div
+                  className={`rounded-2xl px-5 py-3.5 max-w-[85%] sm:max-w-[75%] ${
+                    m.role === "user"
+                      ? "bg-gradient-to-br from-emerald-600 to-cyan-600 text-white shadow-lg shadow-emerald-500/20"
+                      : "bg-slate-900/80 border border-slate-800/50 text-slate-100 backdrop-blur-sm hover:border-slate-700/50 transition-colors"
+                  }`}
+                >
+                  <div className="prose prose-invert max-w-none text-sm prose-p:my-2 prose-headings:my-3">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {m.content}
+                    </ReactMarkdown>
+                  </div>
+                </div>
               </div>
-            </div>
-          )}
+            ))}
 
-          {error && (
-            <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4 text-red-700 dark:text-red-400">
-              <p className="font-semibold">Error</p>
-              <p className="text-sm">{error}</p>
-            </div>
-          )}
-        </div>
-      </ScrollArea>
-
-      <div className="border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 px-4 py-4 shadow-md">
-        <div className="max-w-4xl mx-auto">
-          <div className="flex gap-3 items-end">
-            <div className="flex-1 relative">
-              <Textarea
-                ref={textareaRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="Ask about a stock... (e.g., 'Analyze RELIANCE' or 'Price of TCS')"
-                className="min-h-[60px] max-h-[200px] resize-none pr-12 bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500"
-                disabled={isLoading}
-              />
-            </div>
-            <Button
-              onClick={(e) => handleSubmit(e as any)}
-              disabled={isLoading || !input.trim()}
-              className="h-[60px] w-[60px] rounded-full bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-            >
-              {isLoading ? (
-                <Loader2 className="w-5 h-5 animate-spin" />
-              ) : (
-                <Send className="w-5 h-5" />
-              )}
-            </Button>
+            {isLoading && (
+              <div className="flex gap-4 animate-in fade-in">
+                <div className="w-9 h-9 rounded-xl flex-shrink-0 flex items-center justify-center bg-slate-800 border border-slate-700">
+                  <div className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse" />
+                </div>
+                <div className="flex items-center gap-3 text-sm text-slate-400 bg-slate-900/80 rounded-2xl px-5 py-3.5 backdrop-blur-sm border border-slate-800/50">
+                  <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
+                  <span>Analyzing market data</span>
+                  <span className="animate-bounce">.</span>
+                  <span className="animate-bounce delay-100">.</span>
+                  <span className="animate-bounce delay-200">.</span>
+                </div>
+              </div>
+            )}
           </div>
         </div>
+
+        {/* Input Footer */}
+        <footer className="border-t border-slate-800/50 bg-slate-950/50 backdrop-blur-xl flex-shrink-0">
+          <div className="w-full px-4 sm:px-6 py-4">
+            <div className="flex gap-3">
+              <textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder="Ask about stock trends, valuations, performance..."
+                className="min-h-[56px] resize-none bg-slate-900/80 border border-slate-800 text-white placeholder:text-slate-600 focus:border-emerald-500/50 focus:ring-emerald-500/20 focus:ring-2 rounded-xl transition-all duration-200 backdrop-blur-sm p-4 flex-1 focus:outline-none"
+                onKeyDown={handleKeyDown}
+              />
+              <button
+                onClick={(e: any) => handleSubmit(e)}
+                disabled={isLoading || !input.trim()}
+                className="h-14 w-14 rounded-xl flex-shrink-0 flex items-center justify-center bg-gradient-to-br from-emerald-500 to-cyan-500 text-white hover:shadow-lg hover:shadow-emerald-500/40 disabled:bg-slate-700 disabled:text-slate-500 disabled:shadow-none transition-all duration-200 hover:scale-105 active:scale-95 disabled:cursor-not-allowed font-semibold"
+              >
+                {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
+              </button>
+            </div>
+          </div>
+        </footer>
       </div>
     </div>
   )
